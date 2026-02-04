@@ -110,8 +110,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     /// It may also indicate that a producer has advanced the tail pointer but has not yet
     /// published the link to the next node.
     ///
-    /// If stronger dequeue semantics are required, use <see cref="TryDequeueSpin"/>
-    /// or <see cref="TryDequeueSpinUntilLinked"/>.
+    /// If stronger dequeue semantics are required, or <see cref="TryDequeueSpinUntilLinked"/>.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public bool TryDequeue(out TNode node)
@@ -123,12 +122,6 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
 
         if (next is null)
         {
-            if (ReferenceEquals(head, Volatile.Read(ref _tail!)))
-            {
-                node = null!;
-                return false;
-            }
-
             node = null!;
             return false;
         }
