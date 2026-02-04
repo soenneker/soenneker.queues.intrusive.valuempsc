@@ -151,8 +151,6 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public bool TryDequeueSpinUntilLinked(out TNode node)
     {
-        ThrowIfNotInitialized();
-
         TNode head = _head!;
         TNode? next = Volatile.Read(ref head.Next);
 
@@ -164,9 +162,10 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
                 return false;
             }
 
+            var sw = new SpinWait();
             do
             {
-                Thread.SpinWait(1);
+                sw.SpinOnce();
                 next = Volatile.Read(ref head.Next);
             }
             while (next is null);
