@@ -132,6 +132,61 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     }
 
     /// <summary>
+    /// Attempts to dequeue a node from the queue, spinning up to <paramref name="maxSpins"/>
+    /// only to cover the producer link-publish window.
+    /// </summary>
+    /// <remarks>
+    /// If the queue is truly empty, returns <c>false</c>.
+    /// If a producer has advanced the tail but has not yet published the link from the current head,
+    /// this method spins up to <paramref name="maxSpins"/> waiting for that link to appear.
+    /// It does not wait for new nodes beyond that window.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    public bool TryDequeueSpin(out TNode node, int maxSpins)
+    {
+        ThrowIfNotInitialized();
+
+        TNode head = _head!;
+        TNode? next = Volatile.Read(ref head.Next);
+
+        if (next is null)
+        {
+            // If head == tail, queue is empty (no producer has advanced tail).
+            if (ReferenceEquals(head, Volatile.Read(ref _tail!)))
+            {
+                node = null!;
+                return false;
+            }
+
+            // A producer likely swapped tail but hasn't linked prev.Next yet.
+            if (maxSpins <= 0)
+            {
+                node = null!;
+                return false;
+            }
+
+            var sw = new SpinWait();
+            for (var i = 0; i < maxSpins; i++)
+            {
+                sw.SpinOnce();
+                next = Volatile.Read(ref head.Next);
+                if (next is not null)
+                    break;
+            }
+
+            if (next is null)
+            {
+                node = null!;
+                return false;
+            }
+        }
+
+        _head = next!;
+        node = next!;
+        return true;
+    }
+
+    /// <summary>
     /// Attempts to dequeue a node from the queue, spinning only in the producer link-publish window.
     /// </summary>
     /// <remarks>
