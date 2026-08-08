@@ -18,7 +18,7 @@ dotnet add package Soenneker.Queues.Intrusive.ValueMpsc
 
 ## Overview
 
-`ValueIntrusiveMpscQueue<TNode>` is a **multi-producer / single-consumer (MPSC)** queue built around a classic intrusive algorithm with a permanent sentinel (“stub”) node.
+`ValueIntrusiveMpscQueue<TNode>` is a **multi-producer / single-consumer (MPSC)** queue built around an intrusive moving-dummy algorithm. It starts with a stub node; after each successful dequeue, the returned node becomes the next dummy head.
 
 This *value* variant is designed to minimize indirection and memory traffic by storing queue state directly in value fields rather than reference wrappers.
 
@@ -29,7 +29,8 @@ Key characteristics:
 * Each enqueue performs **a single atomic operation**.
 * **No allocations** are performed by the queue.
 * Node linkage is stored directly on the node (intrusive).
-* Queue state is held in value types for maximum locality and predictability.
+* The consumer fast path performs no atomic read-modify-write operation.
+* Queue state is held in a value type for locality and predictable embedding.
 
 This makes it especially suitable for **hot paths** in low-level concurrency primitives.
 
@@ -65,14 +66,14 @@ Each node carries its own linkage; the queue never allocates or wraps nodes.
 
 ---
 
-### Create a queue with a permanent sentinel
+### Create a queue with an initial dummy node
 
 ```csharp
 var stub = new WorkItem();
 var queue = new ValueIntrusiveMpscQueue<WorkItem>(stub);
 ```
 
-The stub node must remain alive for the entire lifetime of the queue.
+The queue keeps the current dummy alive. The original stub is released by the first successful dequeue and can then be reclaimed by the consumer.
 
 ---
 
@@ -89,16 +90,21 @@ This operation is lock-free and safe to call concurrently from multiple threads.
 ### Dequeue (single-consumer)
 
 ```csharp
+var released = queue.Head;
+
 if (queue.TryDequeue(out var item))
 {
-    // process item
+    // Process item without changing item.Next.
+    // "released" is the old dummy and is now safe to reclaim or relink.
 }
 ```
+
+The returned `item` is also the queue's new `Head`. Its payload can be processed immediately, but the node itself cannot be recycled, relinked, or re-enqueued until a later successful dequeue releases it.
 
 If stronger dequeue guarantees are required (for example, when a producer has advanced the tail but not yet published the link), use:
 
 ```csharp
-queue.TryDequeueSpin(out var item);
+queue.TryDequeueSpin(out var item, maxSpins: 16);
 ```
 
 ---
@@ -109,8 +115,9 @@ This type intentionally enforces strict usage rules:
 
 * **Exactly one consumer thread** is supported.
 * A node must not be enqueued more than once at a time.
-* Nodes may be reused only after being dequeued.
-* The sentinel (stub) node must remain alive for the queue’s lifetime.
+* A node returned by a dequeue remains queue-owned as the moving dummy head.
+* Only the previous `Head` is released by a successful dequeue and safe to reuse.
+* A node must not be recycled, relinked, or re-enqueued while it is the current `Head`.
 * `TryDequeue` may return `false` while a producer is mid-enqueue — this is expected.
 
 Violating these constraints will result in undefined behavior.

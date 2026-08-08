@@ -8,45 +8,48 @@ namespace Soenneker.Queues.Intrusive.ValueMpsc;
 /// <summary>
 /// An intrusive multi-producer, single-consumer (MPSC) queue.
 ///
-/// This queue uses a permanent sentinel ("stub") node and a single atomic operation per enqueue.
-/// Nodes carry their own linkage via <see cref="IIntrusiveNode{TNode}"/>, avoiding allocations.
+/// The queue starts with a dummy node and advances that dummy head as nodes are consumed.
+/// Nodes carry their own linkage via <see cref="IIntrusiveNode{TNode}"/>, avoiding allocations,
+/// and each enqueue performs one atomic operation.
 ///
 /// Thread-safety:
 /// - Multiple producers may call <see cref="Enqueue"/> concurrently.
-/// - Exactly one consumer may call <see cref="TryDequeue"/>,
-///   <see cref="TryDequeueSpinUntilLinked"/>, or <see cref="IsEmpty"/>.
+/// - Exactly one consumer may call the dequeue methods, <see cref="Drain"/>,
+///   <see cref="Head"/>, or <see cref="IsEmpty"/>.
 /// </summary>
 /// <typeparam name="TNode">
-/// The node type stored in the queue. Must be a reference type implementing
-/// <see cref="IIntrusiveNode{TNode}"/> and must not be enqueued concurrently or more than once at a time.
+/// The node type stored in the queue. It must be a reference type implementing
+/// <see cref="IIntrusiveNode{TNode}"/>.
 /// </typeparam>
 /// <remarks>
 /// This is a mutable value type. It must be stored and used as a single instance.
 /// Do not copy this struct (for example, by passing it by value).
+///
+/// A successfully returned node becomes the new consumer head and remains queue-owned until
+/// a later successful dequeue releases it. Do not modify its link or enqueue it again while it
+/// is the current <see cref="Head"/>.
 /// </remarks>
 public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode<TNode>
 {
-    // Consumer-owned head pointer (initially the stub).
+    // Consumer-owned moving dummy head.
     private TNode? _head;
 
     // Producer-shared tail pointer.
     private TNode? _tail;
 
+    /// <summary>
+    /// Initializes the queue with an initial dummy node.
+    /// </summary>
+    /// <param name="stub">
+    /// The initial dummy node. It becomes releasable when the first node is successfully dequeued.
+    /// </param>
     public ValueIntrusiveMpscQueue(TNode stub)
     {
-        if (stub is null)
-            throw new ArgumentNullException(nameof(stub));
+        ArgumentNullException.ThrowIfNull(stub);
 
         stub.Next = null;
-
         _head = stub;
         _tail = stub;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void ThrowIfNotInitialized()
-    {
-        if (_head is null || _tail is null) ThrowNotInitialized();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -54,59 +57,53 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
         => throw new InvalidOperationException("Queue is not initialized. Use the stub constructor.");
 
     /// <summary>
-    /// Enqueues a node into the queue.
-    ///
-    /// This method is safe to call concurrently from multiple producer threads.
-    /// Exactly one atomic operation is performed per enqueue.
+    /// Enqueues a node. This method is safe to call concurrently from multiple producer threads.
     /// </summary>
-    /// <param name="node">The node to enqueue.</param>
-    /// <exception cref="ArgumentNullException">
-    /// Thrown if <paramref name="node"/> is <c>null</c>.
-    /// </exception>
     /// <remarks>
-    /// The provided node must not already be enqueued in this or any other queue.
-    /// Node reuse is allowed only after the node has been dequeued by the consumer.
+    /// The node must not already be linked in any intrusive structure and must not be this queue's
+    /// current <see cref="Head"/>. A node returned from a dequeue remains the current head until a
+    /// later successful dequeue releases it.
     /// </remarks>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Enqueue(TNode node)
     {
-        if (node is null)
-            throw new ArgumentNullException(nameof(node));
+        ArgumentNullException.ThrowIfNull(node);
 
-        ThrowIfNotInitialized();
+        // Producers only need the producer-owned field to validate initialization; do not add a
+        // dependency on consumer state to every enqueue.
+        if (_tail is null)
+            ThrowNotInitialized();
 
         // Clear linkage before publication to avoid stale chains on reuse.
         node.Next = null;
 
-        // Atomically swap the tail and link the previous tail to this node.
-        TNode prev = Interlocked.Exchange(ref _tail!, node);
-        Volatile.Write(ref prev.Next, node);
+        // Atomically swap the tail and then publish the link from the previous tail.
+        TNode previous = Interlocked.Exchange(ref _tail, node)!;
+        Volatile.Write(ref previous.Next, node);
     }
 
     /// <summary>
-    /// Attempts to dequeue a node from the queue without spinning.
-    ///
-    /// This method must be called by the single consumer thread only.
+    /// Attempts to dequeue a node without spinning.
     /// </summary>
-    /// <param name="node">
-    /// When this method returns <c>true</c>, contains the dequeued node.
-    /// When this method returns <c>false</c>, contains <c>null</c>.
-    /// </param>
-    /// <returns>
-    /// <c>true</c> if a node was successfully dequeued; otherwise, <c>false</c>.
-    /// </returns>
     /// <remarks>
-    /// A return value of <c>false</c> does not necessarily mean the queue is empty.
-    /// It may also indicate that a producer has advanced the tail pointer but has not yet
-    /// published the link to the next node.
-    ///
-    /// If stronger dequeue semantics are required, or <see cref="TryDequeueSpinUntilLinked"/>.
+    /// A return value of <c>false</c> may mean either that the queue is empty or that a producer
+    /// has advanced the tail but has not yet published the link. On success, the returned node is
+    /// the new <see cref="Head"/> and remains queue-owned. The head observed before this call is
+    /// released by the successful advance and may then be reclaimed by the consumer.
     /// </remarks>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryDequeue(out TNode node)
     {
-        ThrowIfNotInitialized();
+        // The fast consumer path does not need a load from producer state.
+        if (_head is null)
+            ThrowNotInitialized();
 
+        return TryDequeueCore(out node);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryDequeueCore(out TNode node)
+    {
         TNode head = _head!;
         TNode? next = Volatile.Read(ref head.Next);
 
@@ -122,95 +119,113 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     }
 
     /// <summary>
-    /// Attempts to dequeue a node from the queue, spinning up to <paramref name="maxSpins"/>
-    /// only to cover the producer link-publish window.
+    /// Attempts to dequeue a node, spinning up to <paramref name="maxSpins"/> only when a producer
+    /// has advanced the tail but has not yet published the link.
     /// </summary>
     /// <remarks>
-    /// If the queue is truly empty, returns <c>false</c>.
-    /// If a producer has advanced the tail but has not yet published the link from the current head,
-    /// this method spins up to <paramref name="maxSpins"/> waiting for that link to appear.
-    /// It does not wait for new nodes beyond that window.
+    /// This does not wait for a new enqueue when the queue is empty. On success, the returned node
+    /// becomes the current <see cref="Head"/> and remains queue-owned.
     /// </remarks>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryDequeueSpin(out TNode node, int maxSpins)
     {
-        ThrowIfNotInitialized();
+        TNode? head = _head;
+        if (head is null)
+            ThrowNotInitialized();
 
-        TNode head = _head!;
-        TNode? next = Volatile.Read(ref head.Next);
+        TNode? next = Volatile.Read(ref head!.Next);
+        if (next is null)
+            return TryDequeueSpinSlow(head, out node, maxSpins);
+
+        _head = next;
+        node = next;
+        return true;
+    }
+
+    // Keep the uncommon empty/link-window path out of callers that inline TryDequeueSpin.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryDequeueSpinSlow(TNode head, out TNode node, int maxSpins)
+    {
+        if (ReferenceEquals(head, Volatile.Read(ref _tail)))
+        {
+            node = null!;
+            return false;
+        }
+
+        if (maxSpins <= 0)
+        {
+            node = null!;
+            return false;
+        }
+
+        TNode? next = null;
+        var spinner = new SpinWait();
+
+        for (var i = 0; i < maxSpins; i++)
+        {
+            spinner.SpinOnce();
+            next = Volatile.Read(ref head.Next);
+
+            if (next is not null)
+                break;
+        }
 
         if (next is null)
         {
-            // If head == tail, queue is empty (no producer has advanced tail).
-            if (ReferenceEquals(head, Volatile.Read(ref _tail!)))
-            {
-                node = null!;
-                return false;
-            }
-
-            // A producer likely swapped tail but hasn't linked prev.Next yet.
-            if (maxSpins <= 0)
-            {
-                node = null!;
-                return false;
-            }
-
-            var sw = new SpinWait();
-            for (var i = 0; i < maxSpins; i++)
-            {
-                sw.SpinOnce();
-                next = Volatile.Read(ref head.Next);
-                if (next is not null)
-                    break;
-            }
-
-            if (next is null)
-            {
-                node = null!;
-                return false;
-            }
+            node = null!;
+            return false;
         }
 
-        _head = next!;
-        node = next!;
+        _head = next;
+        node = next;
         return true;
     }
 
     /// <summary>
-    /// Attempts to dequeue a node from the queue, spinning only in the producer link-publish window.
+    /// Attempts to dequeue a node, spinning until an in-progress producer publishes its link.
     /// </summary>
     /// <remarks>
-    /// If the queue is truly empty, this returns <c>false</c>.
-    /// If a producer has advanced the tail pointer but has not yet published the link from the current head,
-    /// this method spins until the link is observed and then dequeues the node.
-    ///
-    /// This method does not wait for producers to enqueue new nodes.
+    /// This returns immediately when the queue is empty and does not wait for a future enqueue.
+    /// On success, the returned node becomes the current <see cref="Head"/> and remains queue-owned.
     /// </remarks>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryDequeueSpinUntilLinked(out TNode node)
     {
-        TNode head = _head!;
-        TNode? next = Volatile.Read(ref head.Next);
+        TNode? head = _head;
+        if (head is null)
+            ThrowNotInitialized();
 
+        TNode? next = Volatile.Read(ref head!.Next);
         if (next is null)
-        {
-            if (ReferenceEquals(head, Volatile.Read(ref _tail!)))
-            {
-                node = null!;
-                return false;
-            }
+            return TryDequeueSpinUntilLinkedSlow(head, out node);
 
-            var sw = new SpinWait();
-            do
-            {
-                sw.SpinOnce();
-                next = Volatile.Read(ref head.Next);
-            }
-            while (next is null);
+        _head = next;
+        node = next;
+        return true;
+    }
+
+    // Keep the uncommon empty/link-window path out of callers that inline the linked-node path.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryDequeueSpinUntilLinkedSlow(TNode head, out TNode node)
+    {
+        if (ReferenceEquals(head, Volatile.Read(ref _tail)))
+        {
+            node = null!;
+            return false;
         }
 
-        _head = next!;
-        node = next!;
+        TNode? next;
+        var spinner = new SpinWait();
+
+        do
+        {
+            spinner.SpinOnce();
+            next = Volatile.Read(ref head.Next);
+        }
+        while (next is null);
+
+        _head = next;
+        node = next;
         return true;
     }
 
@@ -218,39 +233,44 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     /// Gets the current consumer head node.
     /// </summary>
     /// <remarks>
-    /// Consumer-thread only. The returned node is typically the permanent stub or the most
-    /// recently dequeued node and may be used for recycling or cleanup logic.
+    /// Consumer-thread only. The current head is queue-owned and must not be recycled or relinked.
+    /// A consumer that needs delayed reclamation may capture this value before a dequeue; after a
+    /// successful dequeue, that previously captured head is no longer owned by the queue.
     /// </remarks>
     public TNode Head
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get
         {
-            ThrowIfNotInitialized();
-            return _head!;
+            TNode? head = _head;
+            if (head is null)
+                ThrowNotInitialized();
+
+            return head!;
         }
     }
 
     /// <summary>
-    /// Processes up to the specified number of nodes by invoking the provided action for each dequeued node.
+    /// Processes up to <paramref name="max"/> currently linked nodes.
     /// </summary>
-    /// <remarks>Throws an exception if the queue is not initialized. Processing stops if the queue becomes
-    /// empty before reaching the specified maximum.</remarks>
-    /// <param name="action">The action to perform on each node that is dequeued from the queue. This delegate is called once for each node
-    /// processed.</param>
-    /// <param name="max">The maximum number of nodes to process. Must be a non-negative integer. If not specified, all available nodes
-    /// are processed.</param>
-    /// <returns>The number of nodes that were processed by the action. This value will be less than or equal to the specified
-    /// maximum.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    /// <remarks>
+    /// The action must not modify a processed node's intrusive link or immediately recycle/re-enqueue
+    /// it: each returned node remains the queue's moving dummy head until the next successful advance.
+    /// </remarks>
     public int Drain(Action<TNode> action, int max = int.MaxValue)
     {
-        ThrowIfNotInitialized();
+        ArgumentNullException.ThrowIfNull(action);
+        ArgumentOutOfRangeException.ThrowIfNegative(max);
+
+        if (_head is null)
+            ThrowNotInitialized();
+
         var count = 0;
 
-        while (count < max && TryDequeue(out TNode n))
+        // Initialization is invariant after construction, so validate once rather than once per node.
+        while (count < max && TryDequeueCore(out TNode next))
         {
-            action(n);
+            action(next);
             count++;
         }
 
@@ -261,16 +281,17 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     /// Determines whether the queue is currently empty.
     /// </summary>
     /// <remarks>
-    /// Consumer-thread only. This is a best-effort check and may transiently return
-    /// <c>true</c> while a producer is mid-enqueue (tail advanced but link not yet published).
+    /// Consumer-thread only. A producer in the exchange/link publication window makes this return
+    /// <c>false</c>, even though a non-spinning dequeue may not observe the link yet.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsEmpty()
     {
-        ThrowIfNotInitialized();
+        TNode? head = _head;
+        if (head is null)
+            ThrowNotInitialized();
 
-        TNode head = _head!;
-        return Volatile.Read(ref head.Next) is null
-            && ReferenceEquals(head, Volatile.Read(ref _tail!));
+        return Volatile.Read(ref head!.Next) is null
+            && ReferenceEquals(head, Volatile.Read(ref _tail));
     }
 }
