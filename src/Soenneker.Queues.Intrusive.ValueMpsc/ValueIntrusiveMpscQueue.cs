@@ -59,10 +59,10 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     /// <summary>
     /// Enqueues a node. This method is safe to call concurrently from multiple producer threads.
     /// </summary>
+    /// <param name="node">Node to inspect or transform.</param>
     /// <remarks>
     /// The node must not already be linked in any intrusive structure and must not be this queue's
-    /// current <see cref="Head"/>. A node returned from a dequeue remains the current head until a
-    /// later successful dequeue releases it.
+    /// current <see cref="Head"/>.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Enqueue(TNode node)
@@ -85,11 +85,12 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     /// <summary>
     /// Attempts to dequeue a node without spinning.
     /// </summary>
+    /// <param name="node">Node to inspect or transform.</param>
+    /// <returns>true if the requested update was applied; otherwise, false.</returns>
     /// <remarks>
     /// A return value of <c>false</c> may mean either that the queue is empty or that a producer
     /// has advanced the tail but has not yet published the link. On success, the returned node is
-    /// the new <see cref="Head"/> and remains queue-owned. The head observed before this call is
-    /// released by the successful advance and may then be reclaimed by the consumer.
+    /// the new <see cref="Head"/>.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryDequeue(out TNode node)
@@ -122,9 +123,12 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     /// Attempts to dequeue a node, spinning up to <paramref name="maxSpins"/> only when a producer
     /// has advanced the tail but has not yet published the link.
     /// </summary>
+    /// <param name="node">Node to inspect or transform.</param>
+    /// <param name="maxSpins">Max Spins for the try dequeue spin operation.</param>
+    /// <returns>true if the requested update was applied; otherwise, false.</returns>
     /// <remarks>
     /// This does not wait for a new enqueue when the queue is empty. On success, the returned node
-    /// becomes the current <see cref="Head"/> and remains queue-owned.
+    /// becomes the current <see cref="Head"/>.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryDequeueSpin(out TNode node, int maxSpins)
@@ -184,9 +188,11 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     /// <summary>
     /// Attempts to dequeue a node, spinning until an in-progress producer publishes its link.
     /// </summary>
+    /// <param name="node">Node to inspect or transform.</param>
+    /// <returns>true if the requested update was applied; otherwise, false.</returns>
     /// <remarks>
     /// This returns immediately when the queue is empty and does not wait for a future enqueue.
-    /// On success, the returned node becomes the current <see cref="Head"/> and remains queue-owned.
+    /// On success, the returned node becomes the current <see cref="Head"/>.
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryDequeueSpinUntilLinked(out TNode node)
@@ -253,6 +259,9 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     /// <summary>
     /// Processes up to <paramref name="max"/> currently linked nodes.
     /// </summary>
+    /// <param name="action">action to invoke when the operation runs.</param>
+    /// <param name="max">Max for the drain operation.</param>
+    /// <returns>The resulting value.</returns>
     /// <remarks>
     /// The action must not modify a processed node's intrusive link or immediately recycle/re-enqueue
     /// it: each returned node remains the queue's moving dummy head until the next successful advance.
@@ -280,6 +289,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     /// <summary>
     /// Determines whether the queue is currently empty.
     /// </summary>
+    /// <returns>true if the queue is currently empty; otherwise, false.</returns>
     /// <remarks>
     /// Consumer-thread only. A producer in the exchange/link publication window makes this return
     /// <c>false</c>, even though a non-spinning dequeue may not observe the link yet.
