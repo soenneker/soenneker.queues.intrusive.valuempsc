@@ -1,6 +1,7 @@
 [![](https://img.shields.io/nuget/v/soenneker.queues.intrusive.valuempsc.svg?style=for-the-badge)](https://www.nuget.org/packages/soenneker.queues.intrusive.valuempsc/)
 [![](https://img.shields.io/github/actions/workflow/status/soenneker/soenneker.queues.intrusive.valuempsc/publish-package.yml?style=for-the-badge)](https://github.com/soenneker/soenneker.queues.intrusive.valuempsc/actions/workflows/publish-package.yml)
 [![](https://img.shields.io/nuget/dt/soenneker.queues.intrusive.valuempsc.svg?style=for-the-badge)](https://www.nuget.org/packages/soenneker.queues.intrusive.valuempsc/)
+[![](https://img.shields.io/github/actions/workflow/status/soenneker/soenneker.queues.intrusive.valuempsc/build-and-test.yml?label=build%20and%20test&style=for-the-badge)](https://github.com/soenneker/soenneker.queues.intrusive.valuempsc/actions/workflows/build-and-test.yml)
 [![](https://img.shields.io/github/actions/workflow/status/soenneker/soenneker.queues.intrusive.valuempsc/codeql.yml?label=CodeQL&style=for-the-badge)](https://github.com/soenneker/soenneker.queues.intrusive.valuempsc/actions/workflows/codeql.yml)
 
 # ![](https://user-images.githubusercontent.com/4441470/224455560-91ed3ee7-f510-4041-a8d2-3fc093025112.png) Soenneker.Queues.Intrusive.ValueMpsc
@@ -20,7 +21,7 @@ dotnet add package Soenneker.Queues.Intrusive.ValueMpsc
 
 `ValueIntrusiveMpscQueue<TNode>` is a **multi-producer / single-consumer (MPSC)** queue built around an intrusive moving-dummy algorithm. It starts with a stub node; after each successful dequeue, the returned node becomes the next dummy head.
 
-This *value* variant is designed to minimize indirection and memory traffic by storing queue state directly in value fields rather than reference wrappers.
+This value variant stores the queue state directly in a mutable struct. Keep one instance in a field and never copy it or pass it by value: a copy would create a second consumer state over the same producer chain.
 
 Key characteristics:
 
@@ -30,22 +31,9 @@ Key characteristics:
 * **No allocations** are performed by the queue.
 * Node linkage is stored directly on the node (intrusive).
 * The consumer fast path performs no atomic read-modify-write operation.
-* Queue state is held in a value type for locality and predictable embedding.
+* Queue state can be embedded directly in another type.
 
 This makes it especially suitable for **hot paths** in low-level concurrency primitives.
-
----
-
-## Why a “Value” MPSC?
-
-Compared to reference-based implementations, this variant:
-
-* Avoids extra object indirection.
-* Reduces cache misses in contention-heavy scenarios.
-* Plays well with aggressive inlining and AOT scenarios.
-* Is easier to embed inside other value-centric primitives.
-
-If you are building performance-critical infrastructure (locks, schedulers, wait queues), this version is usually the right default.
 
 ---
 
@@ -134,6 +122,6 @@ This queue is a good fit when:
 * Allocation-free behavior is mandatory.
 * You need tight control over memory ordering and visibility.
 * You can enforce a single-consumer contract.
-* You care about instruction count, cache locality, and predictable latency.
+* You can keep the mutable queue struct in one stable storage location.
 
 If you need a general-purpose queue with multiple consumers, prefer `ConcurrentQueue<T>` or `System.Threading.Channels`.
