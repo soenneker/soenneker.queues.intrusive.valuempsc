@@ -44,6 +44,6 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Soenneker.Queues.Intrusive.Abstractions" Version="4.0.19" />
+        <PackageReference Include="Soenneker.Queues.Intrusive.Abstractions" Version="4.0.20" />
     </ItemGroup>
 </Project>
