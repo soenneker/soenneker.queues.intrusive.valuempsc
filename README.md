@@ -21,6 +21,8 @@ dotnet add package Soenneker.Queues.Intrusive.ValueMpsc
 
 `ValueIntrusiveMpscQueue<TNode>` is a **multi-producer / single-consumer (MPSC)** queue built around an intrusive moving-dummy algorithm. It starts with a stub node; after each successful dequeue, the returned node becomes the next dummy head.
 
+`ValueIntrusiveMpscReclaimingQueue<TNode>` uses a permanent internal stub instead. A successfully dequeued node is immediately released from the queue, so consumers can clear, pool, or re-enqueue it without waiting for another dequeue. This variant is useful for pooled async waiters and other workloads where delayed moving-dummy reclamation would require an additional cross-thread handshake.
+
 This value variant stores the queue state directly in a mutable struct. Keep one instance in a field and never copy it or pass it by value: a copy would create a second consumer state over the same producer chain.
 
 The producer tail is placed 64 bytes after the consumer head. This makes the queue state 72 bytes on the supported runtime, trading a small amount of embedded state for lower cache-coherency traffic under concurrent use.
@@ -37,6 +39,8 @@ Key characteristics:
 * Queue state can be embedded directly in another type.
 
 This makes it especially suitable for **hot paths** in low-level concurrency primitives.
+
+Choose the reclaiming variant when immediate node reuse matters. Its dequeue path occasionally re-enqueues the permanent stub, while the moving-dummy variant has the smaller steady-state dequeue algorithm.
 
 ---
 
