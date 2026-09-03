@@ -23,6 +23,8 @@ dotnet add package Soenneker.Queues.Intrusive.ValueMpsc
 
 This value variant stores the queue state directly in a mutable struct. Keep one instance in a field and never copy it or pass it by value: a copy would create a second consumer state over the same producer chain.
 
+The producer tail is placed 64 bytes after the consumer head. This makes the queue state 72 bytes on the supported runtime, trading a small amount of embedded state for lower cache-coherency traffic under concurrent use.
+
 Key characteristics:
 
 * Multiple producers may enqueue concurrently.
@@ -31,6 +33,7 @@ Key characteristics:
 * **No allocations** are performed by the queue.
 * Node linkage is stored directly on the node (intrusive).
 * The consumer fast path performs no atomic read-modify-write operation.
+* Producer and consumer state are cache-line separated to avoid false sharing.
 * Queue state can be embedded directly in another type.
 
 This makes it especially suitable for **hot paths** in low-level concurrency primitives.

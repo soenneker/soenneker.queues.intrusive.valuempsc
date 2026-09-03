@@ -24,6 +24,8 @@ namespace Soenneker.Queues.Intrusive.ValueMpsc;
 /// <remarks>
 /// This is a mutable value type. It must be stored and used as a single instance.
 /// Do not copy this struct (for example, by passing it by value).
+/// Its consumer head and producer tail occupy separate cache lines to avoid false sharing under
+/// concurrent use; consequently, the queue state is larger than two adjacent references.
 ///
 /// A successfully returned node becomes the new consumer head and remains queue-owned until
 /// a later successful dequeue releases it. Do not modify its link or enqueue it again while it
@@ -31,11 +33,9 @@ namespace Soenneker.Queues.Intrusive.ValueMpsc;
 /// </remarks>
 public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode<TNode>
 {
-    // Consumer-owned moving dummy head.
-    private TNode? _head;
-
-    // Producer-shared tail pointer.
-    private TNode? _tail;
+    // Head is consumer-owned while tail is producer-shared. Keeping them on different cache lines
+    // prevents producers' atomic tail exchanges from invalidating the consumer's hot cache line.
+    private CacheLineSeparatedReferences _state;
 
     /// <summary>
     /// Initializes the queue with an initial dummy node.
@@ -47,9 +47,10 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     {
         ArgumentNullException.ThrowIfNull(stub);
 
+        _state = default;
         stub.Next = null;
-        _head = stub;
-        _tail = stub;
+        _state.Head = stub;
+        _state.Tail = stub;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -71,14 +72,14 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
 
         // Producers only need the producer-owned field to validate initialization; do not add a
         // dependency on consumer state to every enqueue.
-        if (_tail is null)
+        if (_state.Tail is null)
             ThrowNotInitialized();
 
         // Clear linkage before publication to avoid stale chains on reuse.
         node.Next = null;
 
         // Atomically swap the tail and then publish the link from the previous tail.
-        TNode previous = Interlocked.Exchange(ref _tail, node)!;
+        TNode previous = (TNode) Interlocked.Exchange(ref _state.Tail, node)!;
         Volatile.Write(ref previous.Next, node);
     }
 
@@ -96,16 +97,27 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     public bool TryDequeue(out TNode node)
     {
         // The fast consumer path does not need a load from producer state.
-        if (_head is null)
+        TNode? head = (TNode?) _state.Head;
+        if (head is null)
             ThrowNotInitialized();
 
-        return TryDequeueCore(out node);
+        TNode? next = Volatile.Read(ref head!.Next);
+
+        if (next is null)
+        {
+            node = null!;
+            return false;
+        }
+
+        _state.Head = next;
+        node = next;
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryDequeueCore(out TNode node)
     {
-        TNode head = _head!;
+        TNode head = (TNode) _state.Head!;
         TNode? next = Volatile.Read(ref head.Next);
 
         if (next is null)
@@ -114,7 +126,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
             return false;
         }
 
-        _head = next;
+        _state.Head = next;
         node = next;
         return true;
     }
@@ -133,7 +145,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryDequeueSpin(out TNode node, int maxSpins)
     {
-        TNode? head = _head;
+        TNode? head = (TNode?) _state.Head;
         if (head is null)
             ThrowNotInitialized();
 
@@ -141,7 +153,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
         if (next is null)
             return TryDequeueSpinSlow(head, out node, maxSpins);
 
-        _head = next;
+        _state.Head = next;
         node = next;
         return true;
     }
@@ -150,7 +162,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     [MethodImpl(MethodImplOptions.NoInlining)]
     private bool TryDequeueSpinSlow(TNode head, out TNode node, int maxSpins)
     {
-        if (ReferenceEquals(head, Volatile.Read(ref _tail)))
+        if (ReferenceEquals(head, Volatile.Read(ref _state.Tail)))
         {
             node = null!;
             return false;
@@ -180,7 +192,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
             return false;
         }
 
-        _head = next;
+        _state.Head = next;
         node = next;
         return true;
     }
@@ -197,7 +209,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryDequeueSpinUntilLinked(out TNode node)
     {
-        TNode? head = _head;
+        TNode? head = (TNode?) _state.Head;
         if (head is null)
             ThrowNotInitialized();
 
@@ -205,7 +217,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
         if (next is null)
             return TryDequeueSpinUntilLinkedSlow(head, out node);
 
-        _head = next;
+        _state.Head = next;
         node = next;
         return true;
     }
@@ -214,7 +226,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     [MethodImpl(MethodImplOptions.NoInlining)]
     private bool TryDequeueSpinUntilLinkedSlow(TNode head, out TNode node)
     {
-        if (ReferenceEquals(head, Volatile.Read(ref _tail)))
+        if (ReferenceEquals(head, Volatile.Read(ref _state.Tail)))
         {
             node = null!;
             return false;
@@ -230,7 +242,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
         }
         while (next is null);
 
-        _head = next;
+        _state.Head = next;
         node = next;
         return true;
     }
@@ -248,7 +260,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         get
         {
-            TNode? head = _head;
+            TNode? head = (TNode?) _state.Head;
             if (head is null)
                 ThrowNotInitialized();
 
@@ -271,7 +283,7 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
         ArgumentNullException.ThrowIfNull(action);
         ArgumentOutOfRangeException.ThrowIfNegative(max);
 
-        if (_head is null)
+        if (_state.Head is null)
             ThrowNotInitialized();
 
         var count = 0;
@@ -297,11 +309,11 @@ public struct ValueIntrusiveMpscQueue<TNode> where TNode : class, IIntrusiveNode
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsEmpty()
     {
-        TNode? head = _head;
+        TNode? head = (TNode?) _state.Head;
         if (head is null)
             ThrowNotInitialized();
 
         return Volatile.Read(ref head!.Next) is null
-            && ReferenceEquals(head, Volatile.Read(ref _tail));
+            && ReferenceEquals(head, Volatile.Read(ref _state.Tail));
     }
 }
