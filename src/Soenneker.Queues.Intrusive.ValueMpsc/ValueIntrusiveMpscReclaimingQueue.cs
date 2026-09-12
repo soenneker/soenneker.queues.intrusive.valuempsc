@@ -20,8 +20,9 @@ namespace Soenneker.Queues.Intrusive.ValueMpsc;
 public struct ValueIntrusiveMpscReclaimingQueue<TNode> where TNode : class, IIntrusiveNode<TNode>
 {
     // Co-locate the consumer-read stub with the consumer head. The producer path only touches Tail.
-    private TNode? _stub;
-    private CacheLineSeparatedReferences _state;
+    // Only TNode references enter _state, so Unsafe.As skips redundant runtime casts while
+    // retaining the non-generic, explicitly padded layout and normal GC tracking/write barriers.
+    private CacheLineSeparatedReclaimingReferences _state;
 
     /// <summary>
     /// Initializes the queue with a permanent stub node.
@@ -32,7 +33,7 @@ public struct ValueIntrusiveMpscReclaimingQueue<TNode> where TNode : class, IInt
         ArgumentNullException.ThrowIfNull(stub);
 
         _state = default;
-        _stub = stub;
+        _state.Stub = stub;
         stub.Next = null;
         _state.Head = stub;
         _state.Tail = stub;
@@ -61,7 +62,7 @@ public struct ValueIntrusiveMpscReclaimingQueue<TNode> where TNode : class, IInt
     private void EnqueueCore(TNode node)
     {
         node.Next = null;
-        TNode previous = (TNode) Interlocked.Exchange(ref _state.Tail, node)!;
+        TNode previous = Unsafe.As<TNode>(Interlocked.Exchange(ref _state.Tail, node))!;
         Volatile.Write(ref previous.Next, node);
     }
 
@@ -77,7 +78,7 @@ public struct ValueIntrusiveMpscReclaimingQueue<TNode> where TNode : class, IInt
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryDequeue(out TNode node)
     {
-        TNode? stub = _stub;
+        TNode? stub = Unsafe.As<TNode>(_state.Stub);
         if (stub is null)
             ThrowNotInitialized();
 
@@ -87,7 +88,7 @@ public struct ValueIntrusiveMpscReclaimingQueue<TNode> where TNode : class, IInt
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryDequeueCore(TNode stub, out TNode node)
     {
-        TNode head = (TNode) _state.Head!;
+        TNode head = Unsafe.As<TNode>(_state.Head)!;
         TNode? next = Volatile.Read(ref head.Next);
 
         if (ReferenceEquals(head, stub))
@@ -98,7 +99,6 @@ public struct ValueIntrusiveMpscReclaimingQueue<TNode> where TNode : class, IInt
                 return false;
             }
 
-            _state.Head = next;
             head = next;
             next = Volatile.Read(ref head.Next);
         }
@@ -112,15 +112,30 @@ public struct ValueIntrusiveMpscReclaimingQueue<TNode> where TNode : class, IInt
 
         if (!ReferenceEquals(head, Volatile.Read(ref _state.Tail)))
         {
+            _state.Head = head;
             node = null!;
             return false;
         }
 
-        EnqueueCore(stub);
+        // We have reached the last node. Detach it by replacing the tail with the stub,
+        // instead of enqueuing the stub and then reading back our own link publication.
+        // Clear the stub before the CAS: a producer can link a new node to it immediately
+        // after the CAS succeeds. No producer can still own head on success.
+        stub.Next = null;
+        if (ReferenceEquals(Interlocked.CompareExchange(ref _state.Tail, stub, head), head))
+        {
+            _state.Head = stub;
+            node = head;
+            return true;
+        }
+
+        // A producer won the tail race. The stub was not published; leave the producer's
+        // chain intact and only release head once that producer has finished linking it.
         next = Volatile.Read(ref head.Next);
 
         if (next is null)
         {
+            _state.Head = head;
             node = null!;
             return false;
         }
@@ -138,7 +153,7 @@ public struct ValueIntrusiveMpscReclaimingQueue<TNode> where TNode : class, IInt
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryDequeueSpinUntilLinked(out TNode node)
     {
-        TNode? stub = _stub;
+        TNode? stub = Unsafe.As<TNode>(_state.Stub);
         if (stub is null)
             ThrowNotInitialized();
 
@@ -172,7 +187,7 @@ public struct ValueIntrusiveMpscReclaimingQueue<TNode> where TNode : class, IInt
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsEmpty()
     {
-        TNode? stub = _stub;
+        TNode? stub = Unsafe.As<TNode>(_state.Stub);
         if (stub is null)
             ThrowNotInitialized();
 
@@ -182,7 +197,7 @@ public struct ValueIntrusiveMpscReclaimingQueue<TNode> where TNode : class, IInt
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsEmptyCore(TNode stub)
     {
-        TNode head = (TNode) _state.Head!;
+        TNode head = Unsafe.As<TNode>(_state.Head)!;
         return ReferenceEquals(head, stub) && Volatile.Read(ref head.Next) is null &&
                ReferenceEquals(head, Volatile.Read(ref _state.Tail));
     }

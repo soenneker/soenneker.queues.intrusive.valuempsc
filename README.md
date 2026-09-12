@@ -25,7 +25,7 @@ dotnet add package Soenneker.Queues.Intrusive.ValueMpsc
 
 This value variant stores the queue state directly in a mutable struct. Keep one instance in a field and never copy it or pass it by value: a copy would create a second consumer state over the same producer chain.
 
-The producer tail is placed 64 bytes after the consumer head. This makes the queue state 72 bytes on the supported runtime, trading a small amount of embedded state for lower cache-coherency traffic under concurrent use.
+The producer tail is placed 64 bytes after the consumer head. Both queue structs occupy 72 bytes; the reclaiming variant stores its permanent stub in the padding between head and tail. This trades a small amount of embedded state for lower cache-coherency traffic under concurrent use.
 
 Key characteristics:
 
@@ -40,7 +40,7 @@ Key characteristics:
 
 This makes it especially suitable for **hot paths** in low-level concurrency primitives.
 
-Choose the reclaiming variant when immediate node reuse matters. Its dequeue path occasionally re-enqueues the permanent stub, while the moving-dummy variant has the smaller steady-state dequeue algorithm.
+Choose the reclaiming variant when immediate node reuse matters. When removing the last node, it uses a single compare-exchange to replace the tail with the permanent stub. If a producer wins that race, the consumer waits for the producer's link before releasing the node (`TryDequeue` returns `false` if the link is not yet available). The moving-dummy variant has the smaller steady-state dequeue algorithm.
 
 ---
 
@@ -118,6 +118,19 @@ This type intentionally enforces strict usage rules:
 Violating these constraints will result in undefined behavior.
 
 This is a **low-level primitive**, not a general-purpose collection.
+
+## Benchmarks
+
+Run the allocation and enqueue/dequeue benchmarks in Release mode:
+
+```bash
+dotnet run -c Release --project benchmark/Soenneker.Queues.Intrusive.ValueMpsc.Benchmarks -- --filter '*' --job short
+```
+
+The benchmarks reuse nodes and cover batches of 1, 8, and 64 nodes. Timings are per batch,
+including enqueue and dequeue. They measure queue overhead on one thread, not cross-thread
+contention or async continuation scheduling. In locks and semaphores with a direct first-waiter
+slot, queue improvements apply to the overflow path.
 
 ---
 
