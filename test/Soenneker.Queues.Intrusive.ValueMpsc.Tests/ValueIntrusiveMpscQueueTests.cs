@@ -12,7 +12,7 @@ namespace Soenneker.Queues.Intrusive.ValueMpsc.Tests;
 public sealed class ValueIntrusiveMpscQueueTests : UnitTest
 {
     [Test]
-    public async Task Constructor_clears_stub_link_and_initializes_empty_queue()
+    public async ValueTask Constructor_clears_stub_link_and_initializes_empty_queue()
     {
         var stale = new TestNode();
         var stub = new TestNode();
@@ -37,7 +37,7 @@ public sealed class ValueIntrusiveMpscQueueTests : UnitTest
     }
 
     [Test]
-    public async Task Enqueue_and_dequeue_preserve_fifo_while_head_moves_to_last_dequeued_node()
+    public async ValueTask Enqueue_and_dequeue_preserve_fifo_while_head_moves_to_last_dequeued_node()
     {
         var stub = new TestNode();
         var first = new TestNode(sequence: 1);
@@ -94,7 +94,7 @@ public sealed class ValueIntrusiveMpscQueueTests : UnitTest
     }
 
     [Test]
-    public async Task Successful_dequeue_releases_previous_head_for_relinking()
+    public async ValueTask Successful_dequeue_releases_previous_head_for_relinking()
     {
         var stub = new TestNode();
         var first = new TestNode(sequence: 1);
@@ -150,7 +150,7 @@ public sealed class ValueIntrusiveMpscQueueTests : UnitTest
     }
 
     [Test]
-    public async Task Drain_rejects_invalid_arguments_without_consuming_a_node()
+    public async ValueTask Drain_rejects_invalid_arguments_without_consuming_a_node()
     {
         var expected = new TestNode();
         var queue = new ValueIntrusiveMpscQueue<TestNode>(new TestNode());
@@ -165,7 +165,7 @@ public sealed class ValueIntrusiveMpscQueueTests : UnitTest
     }
 
     [Test]
-    public async Task Drain_honors_max_and_processes_nodes_in_fifo_order()
+    public async ValueTask Drain_honors_max_and_processes_nodes_in_fifo_order()
     {
         var queue = new ValueIntrusiveMpscQueue<TestNode>(new TestNode());
         queue.Enqueue(new TestNode(sequence: 1));
@@ -186,7 +186,7 @@ public sealed class ValueIntrusiveMpscQueueTests : UnitTest
     }
 
     [Test]
-    public async Task Concurrent_producers_and_single_consumer_preserve_uniqueness_and_each_producers_fifo()
+    public async ValueTask Concurrent_producers_and_single_consumer_preserve_uniqueness_and_each_producers_fifo()
     {
         const int producerCount = 4;
         const int nodesPerProducer = 2_000;

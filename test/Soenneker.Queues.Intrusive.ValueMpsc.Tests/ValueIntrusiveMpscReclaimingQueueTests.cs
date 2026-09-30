@@ -10,7 +10,7 @@ namespace Soenneker.Queues.Intrusive.ValueMpsc.Tests;
 public sealed class ValueIntrusiveMpscReclaimingQueueTests
 {
     [Test]
-    public async Task Dequeued_node_can_be_immediately_reenqueued()
+    public async ValueTask Dequeued_node_can_be_immediately_reenqueued()
     {
         var stub = new TestNode(-1);
         var node = new TestNode(1);
@@ -31,7 +31,7 @@ public sealed class ValueIntrusiveMpscReclaimingQueueTests
     }
 
     [Test]
-    public async Task Concurrent_producers_preserve_uniqueness()
+    public async ValueTask Concurrent_producers_preserve_uniqueness()
     {
         const int producerCount = 4;
         const int nodesPerProducer = 10_000;

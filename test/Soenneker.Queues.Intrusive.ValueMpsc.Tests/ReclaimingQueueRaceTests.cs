@@ -10,7 +10,7 @@ namespace Soenneker.Queues.Intrusive.ValueMpsc.Tests;
 public sealed class ReclaimingQueueRaceTests
 {
     [Test]
-    public async Task Queue_fits_stub_inside_existing_cache_line_padding()
+    public async ValueTask Queue_fits_stub_inside_existing_cache_line_padding()
     {
         await Assert.That(Unsafe.SizeOf<ValueIntrusiveMpscReclaimingQueue<HookNode>>()).IsEqualTo(72);
         await Assert.That(Unsafe.SizeOf<ValueIntrusiveMpscQueue<HookNode>>()).IsEqualTo(72);
@@ -19,7 +19,7 @@ public sealed class ReclaimingQueueRaceTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task Producer_winning_last_node_race_preserves_linked_successor(bool startAtStub)
+    public async ValueTask Producer_winning_last_node_race_preserves_linked_successor(bool startAtStub)
     {
         var stub = new HookNode();
         var first = new HookNode();
@@ -50,7 +50,7 @@ public sealed class ReclaimingQueueRaceTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task Producer_winning_last_node_race_must_publish_before_head_is_reclaimed(bool startAtStub)
+    public async ValueTask Producer_winning_last_node_race_must_publish_before_head_is_reclaimed(bool startAtStub)
     {
         var stub = new HookNode();
         var first = new HookNode();
@@ -108,7 +108,7 @@ public sealed class ReclaimingQueueRaceTests
     }
 
     [Test]
-    public async Task Concurrent_producers_can_recycle_dequeued_nodes_immediately()
+    public async ValueTask Concurrent_producers_can_recycle_dequeued_nodes_immediately()
     {
         const int producerCount = 4;
         const int iterations = 10_000;
