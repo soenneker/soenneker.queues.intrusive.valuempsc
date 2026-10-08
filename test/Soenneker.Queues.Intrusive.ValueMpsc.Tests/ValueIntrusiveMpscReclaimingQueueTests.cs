@@ -10,7 +10,7 @@ namespace Soenneker.Queues.Intrusive.ValueMpsc.Tests;
 public sealed class ValueIntrusiveMpscReclaimingQueueTests
 {
     [Test]
-    public async ValueTask Dequeued_node_can_be_immediately_reenqueued()
+    public async ValueTask Dequeued_node_can_be_immediately_reenqueued(CancellationToken cancellationToken)
     {
         var stub = new TestNode(-1);
         var node = new TestNode(1);
@@ -31,7 +31,7 @@ public sealed class ValueIntrusiveMpscReclaimingQueueTests
     }
 
     [Test]
-    public async ValueTask Concurrent_producers_preserve_uniqueness()
+    public async ValueTask Concurrent_producers_preserve_uniqueness(CancellationToken cancellationToken)
     {
         const int producerCount = 4;
         const int nodesPerProducer = 10_000;
@@ -44,15 +44,15 @@ public sealed class ValueIntrusiveMpscReclaimingQueueTests
         Task[] producers = Enumerable.Range(0, producerCount)
                                      .Select(producer => Task.Run(() =>
                                      {
-                                         start.Wait();
+                                         start.Wait(cancellationToken: cancellationToken);
                                          for (var i = 0; i < nodesPerProducer; i++)
                                              queue.Enqueue(new TestNode(producer * nodesPerProducer + i));
-                                     }))
+                                     }, cancellationToken: cancellationToken))
                                      .ToArray();
 
         Task consumer = Task.Run(() =>
         {
-            start.Wait();
+            start.Wait(cancellationToken: cancellationToken);
             var spin = new SpinWait();
 
             while (observed.Count < total)
@@ -77,10 +77,10 @@ public sealed class ValueIntrusiveMpscReclaimingQueueTests
                     spin.SpinOnce();
                 }
             }
-        });
+        }, cancellationToken: cancellationToken);
 
         start.Set();
-        await Task.WhenAll(producers.Append(consumer)).WaitAsync(TimeSpan.FromSeconds(10));
+        await Task.WhenAll(producers.Append(consumer)).WaitAsync(TimeSpan.FromSeconds(10), cancellationToken: cancellationToken);
 
         await Assert.That(observed.Count).IsEqualTo(total);
         await Assert.That(queue.IsEmpty()).IsTrue();

@@ -10,7 +10,7 @@ namespace Soenneker.Queues.Intrusive.ValueMpsc.Tests;
 public sealed class ReclaimingQueueRaceTests
 {
     [Test]
-    public async ValueTask Queue_fits_stub_inside_existing_cache_line_padding()
+    public async ValueTask Queue_fits_stub_inside_existing_cache_line_padding(CancellationToken cancellationToken)
     {
         await Assert.That(Unsafe.SizeOf<ValueIntrusiveMpscReclaimingQueue<HookNode>>()).IsEqualTo(72);
         await Assert.That(Unsafe.SizeOf<ValueIntrusiveMpscQueue<HookNode>>()).IsEqualTo(72);
@@ -19,7 +19,7 @@ public sealed class ReclaimingQueueRaceTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async ValueTask Producer_winning_last_node_race_preserves_linked_successor(bool startAtStub)
+    public async ValueTask Producer_winning_last_node_race_preserves_linked_successor(bool startAtStub, CancellationToken cancellationToken)
     {
         var stub = new HookNode();
         var first = new HookNode();
@@ -50,7 +50,7 @@ public sealed class ReclaimingQueueRaceTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async ValueTask Producer_winning_last_node_race_must_publish_before_head_is_reclaimed(bool startAtStub)
+    public async ValueTask Producer_winning_last_node_race_must_publish_before_head_is_reclaimed(bool startAtStub, CancellationToken cancellationToken)
     {
         var stub = new HookNode();
         var first = new HookNode();
@@ -71,11 +71,11 @@ public sealed class ReclaimingQueueRaceTests
             last.OnNext = () =>
             {
                 tailExchanged.Set();
-                if (!publishLink.Wait(TimeSpan.FromSeconds(10)))
+                if (!publishLink.Wait(TimeSpan.FromSeconds(10), cancellationToken: cancellationToken))
                     throw new TimeoutException("Consumer did not release the producer.");
             };
-            producer = Task.Run(() => queue.Enqueue(successor));
-            if (!tailExchanged.Wait(TimeSpan.FromSeconds(10)))
+            producer = Task.Run(() => queue.Enqueue(successor), cancellationToken: cancellationToken);
+            if (!tailExchanged.Wait(TimeSpan.FromSeconds(10), cancellationToken: cancellationToken))
                 throw new TimeoutException("Producer did not exchange the tail.");
         };
         stub.OnNext = startAtStub ? () => stub.OnNext = publish : publish;
@@ -108,7 +108,7 @@ public sealed class ReclaimingQueueRaceTests
     }
 
     [Test]
-    public async ValueTask Concurrent_producers_can_recycle_dequeued_nodes_immediately()
+    public async ValueTask Concurrent_producers_can_recycle_dequeued_nodes_immediately(CancellationToken cancellationToken)
     {
         const int producerCount = 4;
         const int iterations = 10_000;
@@ -134,7 +134,7 @@ public sealed class ReclaimingQueueRaceTests
                 }
                 returned[id] = null;
             }
-        })).ToArray();
+        }, cancellationToken: cancellationToken)).ToArray();
 
         Task consumer = Task.Run(() =>
         {
@@ -156,7 +156,7 @@ public sealed class ReclaimingQueueRaceTests
                 consumed++;
                 spin.Reset();
             }
-        });
+        }, cancellationToken: cancellationToken);
 
         start.Set();
         await Task.WhenAll(producers.Append(consumer));
